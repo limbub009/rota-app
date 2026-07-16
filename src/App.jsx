@@ -1,4 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
+
+/* ---------- Supabase (cloud storage — synced across devices) ---------- */
+const SUPABASE_URL = 'https://kuyejwrvxktwynnrlryu.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt1eWVqd3J2eGt0d3lubnJscnl1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxNTE0MTgsImV4cCI6MjA5OTcyNzQxOH0.BwUiPJvznz1PzpHK3vKNVKIAvcXCqzk8bXPXQ0zWVNs';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const monthId = (m, y) => `${y}-${String(m).padStart(2, '0')}`;
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -27,6 +35,13 @@ const THEME_KEY = 'vf-theme';
 function getDaysInMonth(month, year) { return new Date(year, month, 0).getDate(); }
 function getFirstDayOfMonth(month, year) { return new Date(year, month - 1, 1).getDay(); }
 function getDayLetter(dow) { return ['S', 'M', 'T', 'W', 'T', 'F', 'S'][dow]; }
+
+function formatUpdated(iso) {
+  if (!iso) return 'unknown';
+  try {
+    return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  } catch (e) { return 'unknown'; }
+}
 
 function parseHTMLTable(htmlText, month, year) {
   const parser = new DOMParser();
@@ -103,12 +118,34 @@ function VerifoneMark({ size = 34 }) {
   );
 }
 
-function MonthCalendar({ data, month, year, onUpdate, filteredName, index }) {
+function MonthCalendar({ data, month, year, onUpdate, filteredName, index, canEdit, isMobile }) {
   const [editingCell, setEditingCell] = useState(null);
   const [editValue, setEditValue] = useState('');
 
   const daysInMonth = getDaysInMonth(month, year);
   const firstDay = getFirstDayOfMonth(month, year);
+
+  /* Monday-aligned weeks for the mobile view */
+  const mondayOffset = (firstDay + 6) % 7;
+  const weeks = [];
+  {
+    let s = 1;
+    let e = Math.min(daysInMonth, 7 - mondayOffset === 0 ? 7 : 7 - mondayOffset);
+    while (s <= daysInMonth) {
+      weeks.push([s, e]);
+      s = e + 1;
+      e = Math.min(daysInMonth, s + 6);
+    }
+  }
+  const today = new Date();
+  const isCurrentMonth = today.getMonth() + 1 === month && today.getFullYear() === year;
+  const initialWeek = isCurrentMonth
+    ? Math.max(0, weeks.findIndex(([a, b]) => today.getDate() >= a && today.getDate() <= b))
+    : 0;
+  const [weekIdx, setWeekIdx] = useState(initialWeek);
+
+  const effWeek = Math.min(weekIdx, weeks.length - 1);
+  const [dayStart, dayEnd] = isMobile ? weeks[effWeek] : [1, daysInMonth];
 
   const getShift = (empId, day) => {
     const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -132,6 +169,9 @@ function MonthCalendar({ data, month, year, onUpdate, filteredName, index }) {
     ? data.employees.filter(e => e.name === filteredName)
     : data.employees;
 
+  const days = [];
+  for (let d = dayStart; d <= dayEnd; d++) days.push(d);
+
   return (
     <section className="month-card rise" style={{ animationDelay: `${0.08 * index}s` }}>
       <header className="month-head">
@@ -140,14 +180,37 @@ function MonthCalendar({ data, month, year, onUpdate, filteredName, index }) {
         <span className="month-meta">{employees.length} {employees.length === 1 ? 'person' : 'people'} · {daysInMonth} days</span>
       </header>
 
+      <div className="month-note">
+        Last updated <strong>{formatUpdated(data.updatedAt)}</strong> — may not reflect the latest rota changes.
+      </div>
+
+      {isMobile && weeks.length > 1 && (
+        <div className="week-nav">
+          <button
+            className="week-btn"
+            disabled={effWeek <= 0}
+            onClick={() => setWeekIdx(Math.max(0, effWeek - 1))}
+            aria-label="Previous week"
+          >‹</button>
+          <span className="week-label">
+            Week {effWeek + 1} of {weeks.length} · {dayStart}–{dayEnd} {MONTHS_SHORT[month - 1]}
+          </span>
+          <button
+            className="week-btn"
+            disabled={effWeek >= weeks.length - 1}
+            onClick={() => setWeekIdx(Math.min(weeks.length - 1, effWeek + 1))}
+            aria-label="Next week"
+          >›</button>
+        </div>
+      )}
+
       <div className="grid-wrap">
         <table className="rota-grid">
           <thead>
             <tr>
               <th className="name-col">Name</th>
-              {Array.from({ length: daysInMonth }, (_, i) => {
-                const day = i + 1;
-                const dow = (firstDay + i) % 7;
+              {days.map((day) => {
+                const dow = (firstDay + day - 1) % 7;
                 const weekend = dow === 0 || dow === 6;
                 return (
                   <th key={day} className={weekend ? 'wknd' : ''}>
@@ -165,9 +228,8 @@ function MonthCalendar({ data, month, year, onUpdate, filteredName, index }) {
                   <span className="emp-name">{emp.name}</span>
                   <span className="emp-team">{emp.team}</span>
                 </td>
-                {Array.from({ length: daysInMonth }, (_, i) => {
-                  const day = i + 1;
-                  const dow = (firstDay + i) % 7;
+                {days.map((day) => {
+                  const dow = (firstDay + day - 1) % 7;
                   const weekend = dow === 0 || dow === 6;
                   const shift = getShift(emp.id, day);
                   const cellKey = `${emp.id}-${day}`;
@@ -177,8 +239,12 @@ function MonthCalendar({ data, month, year, onUpdate, filteredName, index }) {
                   return (
                     <td
                       key={day}
-                      className={`cell ${weekend ? 'wknd' : ''}`}
-                      onClick={() => { setEditingCell(cellKey); setEditValue(shift?.code || ''); }}
+                      className={`cell ${weekend ? 'wknd' : ''} ${canEdit ? '' : 'readonly'}`}
+                      onClick={() => {
+                        if (!canEdit) return;
+                        setEditingCell(cellKey);
+                        setEditValue(shift?.code || '');
+                      }}
                     >
                       {isEditing ? (
                         <input
@@ -216,16 +282,13 @@ function MonthCalendar({ data, month, year, onUpdate, filteredName, index }) {
 }
 
 export default function RotaApp() {
-  /* Load synchronously at state creation — immune to StrictMode double-effects */
+  /* localStorage acts as an offline cache; Supabase is the source of truth */
   const [months, setMonths] = useState(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       const parsed = saved ? JSON.parse(saved) : [];
       return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-      console.error('Could not load saved rota:', e);
-      return [];
-    }
+    } catch (e) { return []; }
   });
   const [theme, setTheme] = useState(() => {
     const t = localStorage.getItem(THEME_KEY);
@@ -238,21 +301,189 @@ export default function RotaApp() {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [year, setYear] = useState(new Date().getFullYear());
   const [filteredName, setFilteredName] = useState('');
+  const [sync, setSync] = useState('loading'); // loading | synced | saving | offline
+  const saveTimers = useRef({});
+
+  /* ---------- Admin auth (client-side gate) ---------- */
+  const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem('vf-admin') === '1');
+  const [showLogin, setShowLogin] = useState(false);
+  const [loginU, setLoginU] = useState('');
+  const [loginP, setLoginP] = useState('');
+  const [loginErr, setLoginErr] = useState('');
+
+  const doLogin = () => {
+    if (loginU.trim().toLowerCase() === 'admin' && loginP === 'bisheslimbu') {
+      setIsAdmin(true);
+      localStorage.setItem('vf-admin', '1');
+      setShowLogin(false); setLoginU(''); setLoginP(''); setLoginErr('');
+      showToast('Signed in as admin');
+    } else {
+      setLoginErr('Incorrect username or password.');
+    }
+  };
+  const doLogout = () => {
+    setIsAdmin(false);
+    localStorage.removeItem('vf-admin');
+    if (view === 'add') setView('view');
+    showToast('Signed out');
+  };
+
+  /* ---------- Mobile detection: week view under 768px ---------- */
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 768px)');
+    const onChange = (e) => setIsMobile(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  /* ---------- Import backup file (admin only) ---------- */
+  const fileRef = useRef(null);
+  const handleImportFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed) || parsed.some(m =>
+        !m.month || !m.year || !Array.isArray(m.employees) || !Array.isArray(m.shifts)
+      )) throw new Error('Not a valid rota backup file.');
+
+      const stamped = parsed.map(m => ({ ...m, updatedAt: m.updatedAt || new Date().toISOString() }));
+
+      /* merge: imported months overwrite same-id months, others kept */
+      setMonths(prev => {
+        const map = new Map(prev.map(m => [monthId(m.month, m.year), m]));
+        stamped.forEach(m => map.set(monthId(m.month, m.year), m));
+        return Array.from(map.values());
+      });
+
+      setSync('saving');
+      const { error: err } = await supabase.from('rota_months').upsert(
+        stamped.map(m => ({
+          id: monthId(m.month, m.year),
+          month: m.month,
+          year: m.year,
+          data: { employees: m.employees, shifts: m.shifts },
+          updated_at: m.updatedAt
+        }))
+      );
+      if (err) throw err;
+      setSync('synced');
+      showToast(`Imported ${stamped.length} month${stamped.length === 1 ? '' : 's'}`);
+    } catch (e2) {
+      console.error('Import failed:', e2);
+      showToast('Import failed — check the file');
+      setSync('offline');
+    }
+  };
 
   useEffect(() => { document.title = 'Verifone Rota'; }, []);
 
-  /* ---------- Persist ---------- */
+  /* ---------- Initial load from Supabase (with one-time migration) ---------- */
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(months));
-    } catch (e) {
-      console.error('Could not save rota:', e);
-    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: rows, error: err } = await supabase
+          .from('rota_months')
+          .select('*')
+          .order('year', { ascending: true })
+          .order('month', { ascending: true });
+        if (err) throw err;
+        if (cancelled) return;
+
+        if (rows.length === 0) {
+          /* Cloud is empty — migrate whatever this browser already has */
+          const local = (() => {
+            try {
+              const saved = localStorage.getItem(STORAGE_KEY);
+              const parsed = saved ? JSON.parse(saved) : [];
+              return Array.isArray(parsed) ? parsed : [];
+            } catch (e) { return []; }
+          })();
+          if (local.length > 0) {
+            const { error: upErr } = await supabase.from('rota_months').upsert(
+              local.map(m => ({
+                id: monthId(m.month, m.year),
+                month: m.month,
+                year: m.year,
+                data: { employees: m.employees, shifts: m.shifts },
+                updated_at: new Date().toISOString()
+              }))
+            );
+            if (upErr) throw upErr;
+            if (!cancelled) { setMonths(local); setSync('synced'); setToast('Local months uploaded to cloud'); setTimeout(() => setToast(''), 2600); }
+          } else {
+            setSync('synced');
+          }
+        } else {
+          const loaded = rows.map(r => ({
+            month: r.month,
+            year: r.year,
+            employees: r.data.employees || [],
+            shifts: r.data.shifts || [],
+            updatedAt: r.updated_at
+          }));
+          setMonths(loaded);
+          setSync('synced');
+        }
+      } catch (e) {
+        console.error('Supabase load failed, using local cache:', e);
+        if (!cancelled) setSync('offline');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  /* ---------- Cache locally on every change ---------- */
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(months)); } catch (e) {}
   }, [months]);
 
   useEffect(() => {
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  /* ---------- Cloud writes ---------- */
+  const pushMonth = async (m) => {
+    setSync('saving');
+    try {
+      const { error: err } = await supabase.from('rota_months').upsert({
+        id: monthId(m.month, m.year),
+        month: m.month,
+        year: m.year,
+        data: { employees: m.employees, shifts: m.shifts },
+        updated_at: m.updatedAt || new Date().toISOString()
+      });
+      if (err) throw err;
+      setSync('synced');
+    } catch (e) {
+      console.error('Cloud save failed:', e);
+      setSync('offline');
+    }
+  };
+
+  const pushMonthDebounced = (m) => {
+    const id = monthId(m.month, m.year);
+    clearTimeout(saveTimers.current[id]);
+    saveTimers.current[id] = setTimeout(() => pushMonth(m), 700);
+  };
+
+  const removeMonthCloud = async (m, y) => {
+    setSync('saving');
+    try {
+      const { error: err } = await supabase.from('rota_months').delete().eq('id', monthId(m, y));
+      if (err) throw err;
+      setSync('synced');
+    } catch (e) {
+      console.error('Cloud delete failed:', e);
+      setSync('offline');
+    }
+  };
 
   const sortedMonths = [...months].sort((a, b) =>
     a.year === b.year ? a.month - b.month : a.year - b.year
@@ -276,8 +507,9 @@ export default function RotaApp() {
   const handleParse = () => {
     setError('');
     try {
-      const parsed = parseHTMLTable(htmlInput, addMonth, addYear);
+      const parsed = { ...parseHTMLTable(htmlInput, addMonth, addYear), updatedAt: new Date().toISOString() };
       setMonths(prev => [...prev, parsed]);
+      pushMonth(parsed);
       setHtmlInput('');
       setView('view');
       showToast(`${MONTHS[addMonth - 1]} ${addYear} added`);
@@ -288,11 +520,14 @@ export default function RotaApp() {
 
   const deleteMonth = (m, y) => {
     setMonths(months.filter(d => !(d.month === m && d.year === y)));
+    removeMonthCloud(m, y);
     showToast(`${MONTHS[m - 1]} ${y} deleted`);
   };
 
   const updateMonthData = (m, y, newData) => {
-    setMonths(months.map(d => (d.month === m && d.year === y ? newData : d)));
+    const stamped = { ...newData, updatedAt: new Date().toISOString() };
+    setMonths(months.map(d => (d.month === m && d.year === y ? stamped : d)));
+    pushMonthDebounced(stamped);
   };
 
   const allNames = (() => {
@@ -326,6 +561,15 @@ export default function RotaApp() {
           </div>
 
           <div className="top-actions">
+            <span className={`sync-pill ${sync}`} title={
+              sync === 'synced' ? 'All changes saved to cloud' :
+              sync === 'saving' ? 'Saving to cloud…' :
+              sync === 'loading' ? 'Loading from cloud…' :
+              'Offline — changes saved on this device only'
+            }>
+              <span className="sync-dot" />
+              {sync === 'synced' ? 'Synced' : sync === 'saving' ? 'Saving…' : sync === 'loading' ? 'Loading…' : 'Offline'}
+            </span>
             <button
               className="icon-btn"
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -338,10 +582,15 @@ export default function RotaApp() {
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
               )}
             </button>
-            {months.length > 0 && view === 'view' && (
+            {isAdmin && months.length > 0 && view === 'view' && (
               <button className="btn-primary" onClick={() => { setError(''); setView('add'); }}>
                 Add {MONTHS_SHORT[addMonth - 1]} {addYear}
               </button>
+            )}
+            {isAdmin ? (
+              <button className="btn-ghost" onClick={doLogout}>Sign out</button>
+            ) : (
+              <button className="btn-ghost" onClick={() => { setLoginErr(''); setShowLogin(true); }}>Admin</button>
             )}
           </div>
         </div>
@@ -353,14 +602,18 @@ export default function RotaApp() {
           <div className="hero rise">
             <VerifoneMark size={72} />
             <h1>Your rota,<br />beautifully simple.</h1>
-            <p>Paste your schedule once. View every month, filter to your name, and edit shifts — all saved in this browser.</p>
-            <button className="btn-primary lg" onClick={() => setView('add')}>Add your first month</button>
+            <p>Paste your schedule once. View every month, filter to your name — synced to every device.</p>
+            {isAdmin ? (
+              <button className="btn-primary lg" onClick={() => setView('add')}>Add your first month</button>
+            ) : (
+              <p className="hero-hint">No rota loaded yet. Sign in as admin (top right) to add months.</p>
+            )}
           </div>
         </main>
       )}
 
       {/* ---------- Add month ---------- */}
-      {view === 'add' && (
+      {view === 'add' && isAdmin && (
         <main className="page">
           <div className="panel rise">
             <div className="panel-head">
@@ -430,6 +683,21 @@ export default function RotaApp() {
                 )}
               </div>
 
+              {isAdmin && (
+                <div className="import-wrap">
+                  <button className="btn-ghost sm" onClick={() => fileRef.current && fileRef.current.click()}>
+                    ⬆ Import backup
+                  </button>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept=".json,.txt,application/json,text/plain"
+                    style={{ display: 'none' }}
+                    onChange={handleImportFile}
+                  />
+                </div>
+              )}
+
               {usedCodes.length > 0 && (
                 <div className="legend">
                   {usedCodes.map(code => (
@@ -444,14 +712,16 @@ export default function RotaApp() {
 
             {sortedMonths.map((data, i) => (
               <div className="month-block" key={`${data.year}-${data.month}`}>
-                <div className="month-tools">
-                  <button
-                    className="btn-danger sm"
-                    onClick={() => deleteMonth(data.month, data.year)}
-                  >
-                    Delete {MONTHS_SHORT[data.month - 1]} {data.year}
-                  </button>
-                </div>
+                {isAdmin && (
+                  <div className="month-tools">
+                    <button
+                      className="btn-danger sm"
+                      onClick={() => deleteMonth(data.month, data.year)}
+                    >
+                      Delete {MONTHS_SHORT[data.month - 1]} {data.year}
+                    </button>
+                  </div>
+                )}
                 <MonthCalendar
                   data={data}
                   month={data.month}
@@ -459,13 +729,42 @@ export default function RotaApp() {
                   index={i}
                   onUpdate={(updated) => updateMonthData(data.month, data.year, updated)}
                   filteredName={filteredName}
+                  canEdit={isAdmin}
+                  isMobile={isMobile}
                 />
               </div>
             ))}
 
-            <p className="footnote">Click any cell to edit a shift. Changes save automatically in this browser.</p>
+            <p className="footnote">
+              {isAdmin
+                ? 'Click any cell to edit a shift. Changes sync to the cloud automatically.'
+                : 'Read-only view — sign in as admin to edit shifts.'}
+            </p>
           </div>
         </main>
+      )}
+
+      {showLogin && (
+        <div className="modal-backdrop" onClick={() => setShowLogin(false)}>
+          <div className="modal rise" onClick={(e) => e.stopPropagation()}>
+            <h3>Admin sign in</h3>
+            <div className="field">
+              <label>Username</label>
+              <input autoFocus value={loginU} onChange={(e) => setLoginU(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') doLogin(); }} />
+            </div>
+            <div className="field">
+              <label>Password</label>
+              <input type="password" value={loginP} onChange={(e) => setLoginP(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') doLogin(); }} />
+            </div>
+            {loginErr && <div className="notice error">{loginErr}</div>}
+            <div className="modal-actions">
+              <button className="btn-ghost" onClick={() => setShowLogin(false)}>Cancel</button>
+              <button className="btn-primary" onClick={doLogin}>Sign in</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && <div className="toast">{toast}</div>}
@@ -559,6 +858,20 @@ const css = `
 .divider { width: 1px; height: 22px; background: var(--line-strong); }
 .app-name { font-size: 15px; font-weight: 500; color: var(--text-dim); letter-spacing: .14em; text-transform: uppercase; }
 .top-actions { display: flex; align-items: center; gap: 10px; }
+
+/* ---------- sync status ---------- */
+.sync-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 600; color: var(--text-dim);
+  padding: 7px 14px; border: 1px solid var(--line-strong); border-radius: 999px;
+  user-select: none;
+}
+.sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); }
+.sync-pill.synced .sync-dot { background: var(--mint-strong); box-shadow: 0 0 8px rgba(46,227,165,0.7); }
+.sync-pill.saving .sync-dot { background: #FFA94F; animation: blink 1s ease-in-out infinite; }
+.sync-pill.loading .sync-dot { background: #4FB8FF; animation: blink 1s ease-in-out infinite; }
+.sync-pill.offline .sync-dot { background: #FF6B5E; }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* ---------- buttons ---------- */
 .btn-primary {
@@ -755,6 +1068,50 @@ tr:hover .cell.wknd { background: var(--surface-2); }
 
 .footnote { text-align: center; font-size: 13px; color: var(--text-dim); margin-top: 8px; }
 
+/* ---------- month note (disclaimer) ---------- */
+.month-note {
+  padding: 9px 24px; font-size: 12px; color: var(--text-dim);
+  background: var(--surface-2); border-bottom: 1px solid var(--line);
+}
+.month-note strong { color: var(--text); font-weight: 600; }
+
+/* ---------- week navigation (mobile) ---------- */
+.week-nav {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line);
+}
+.week-label { font-size: 13px; font-weight: 600; color: var(--text-dim); }
+.week-btn {
+  width: 34px; height: 34px; border-radius: 50%;
+  font-size: 20px; line-height: 1; font-family: inherit;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--line-strong); cursor: pointer;
+  transition: all .18s ease;
+}
+.week-btn:hover:not(:disabled) { border-color: var(--mint-strong); color: var(--mint-strong); }
+.week-btn:disabled { opacity: .3; cursor: default; }
+
+/* ---------- login modal ---------- */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 20px; padding: 28px; width: 100%; max-width: 380px;
+  box-shadow: var(--shadow);
+}
+.modal h3 { margin: 0 0 20px; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+.hero-hint { font-size: 14px !important; opacity: .85; }
+
+.cell.readonly { cursor: default; }
+
 /* ---------- toast ---------- */
 .toast {
   position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
@@ -784,6 +1141,25 @@ tr:hover .cell.wknd { background: var(--surface-2); }
   .name-col { width: 110px; min-width: 110px; }
   .rota-grid { table-layout: auto; }
   .cell { min-width: 30px; }
+}
+
+@media (max-width: 768px) {
+  .app-name { display: none; }
+  .divider { display: none; }
+  .sync-pill { padding: 7px 10px; }
+  .btn-primary { padding: 9px 14px; font-size: 13px; }
+  .btn-ghost { padding: 8px 12px; font-size: 13px; }
+  .month-head { padding: 16px 16px 12px; flex-wrap: wrap; }
+  .month-meta { width: 100%; margin-left: 24px; }
+  .month-note { padding: 8px 16px; }
+  .name-col { width: 96px; min-width: 96px; }
+  .cell { min-width: 36px; padding: 6px 2px; }
+  .chip { font-size: 11px; min-width: 26px; padding: 3px 5px; }
+  .rota-grid { table-layout: fixed; }
+  .legend-item em { display: none; }
+  .hero { padding: 60px 12px 40px; }
+  .controls { padding: 12px 14px; gap: 12px; }
+  .import-wrap { margin-left: auto; }
 }
 
 /* ---------- reduced motion ---------- */
